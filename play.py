@@ -1,6 +1,5 @@
 from multiprocessing import Process, Queue
 from utils.model import Model
-from utils.game import Game
 from numba import jit, cuda
 from PIL import Image
 from tqdm import tqdm
