@@ -3,13 +3,14 @@ from utils.model import Model
 from numba import jit, cuda
 from PIL import Image
 from tqdm import tqdm
-import threading, requests, hashlib, random, numpy as np, math, copy, time, json, os
+import threading, requests, hashlib, random, numpy as np, math, copy, gzip, time, json, os
 
 class Main:
     def __init__(self):
-        file = json.load(open('model-training-data.py', 'r+'))
+        with gzip.open('model-training-data.gz', 'rb') as file:
+            file = json.loads(file.read().decode())
 
-        self.brain = [self.pad(file[0])] + [np.array(file[1])] + file[2:]
+        self.network = [self.pad(file[0])] + [np.array(file[1])] + file[2:]
         self.play()
 
     def pad(self, model):
@@ -32,7 +33,7 @@ class Main:
         return np.array(model)
 
     def play(self):
-        model, heights, hidden_activation_function, output_activation_function, cost_function = self.brain
+        model, heights, hidden_activation_function, output_activation_function, cost_function = self.network
         model = Model(
             model=model,
             heights=heights,
@@ -73,7 +74,7 @@ class Main:
             print(normalized_image)
 
             model_outputs = model.eval(
-                input = normalized_image
+                input = normalized_image,
             )[-1]
 
             answer = np.argmax(model_outputs)
