@@ -17,20 +17,26 @@ class Model:
         self.hidden_layer_activation_function = getattr(self, "_"+hidden_function)
         self.output_layer_activation_function = getattr(self, "_"+output_function)
         self.cost_function = getattr(self, "_"+cost_function)
-        
-    def _sigmoid(self, x, deriv=False):
+    
+    @staticmethod
+    @numba.cfunc("float64[:](float64[:], optional(boolean))")
+    def _sigmoid(x, deriv=False):
         if deriv:
             return x * (1 - x)
 
         return ( 1 / ( 1 + np.exp(-x) ) )
 
-    def _tanh(self, x, deriv=False):
+    @staticmethod
+    @numba.cfunc("float64[:](float64[:], optional(boolean))")
+    def _tanh(x, deriv=False):
         if deriv:
             return (1 - x ** 2)
 
         return np.tanh(x)
 
-    def _relu(self, x, deriv=False):
+    @staticmethod
+    @numba.cfunc("float64[:](float64[:], optional(boolean))")
+    def _relu(x, deriv=False):
 
         negative_slope = 10 ** -9
 
@@ -39,7 +45,9 @@ class Model:
 
         return 1 * x * (x > 0) + (negative_slope * x * (x < 0))
 
-    def _softmax(self, x, deriv=False):
+    @staticmethod
+    @numba.cfunc("float64[:](float64[:], optional(boolean))")
+    def _softmax(x, deriv=False):
 
         if deriv:
             softmax_output = np.exp(x) / np.sum(np.exp(x))
@@ -52,8 +60,9 @@ class Model:
 
         return e_x / e_x.sum()
             
-        
-    def _cross_entropy(self, outputs, expected_outputs, deriv=False):
+    @staticmethod
+    @numba.cfunc("float64[:](float64[:], float64[:], optional(boolean))")
+    def _cross_entropy(outputs, expected_outputs, deriv=False):
         if deriv:
             return (outputs - expected_outputs) / outputs.shape[0]
 
@@ -63,12 +72,15 @@ class Model:
 
         return -(expected_outputs * np.log(outputs + epsilon))
         
-    def _mse(self, outputs, expected_outputs, deriv=False):
+    @staticmethod
+    @numba.cfunc("float64[:](float64[:], float64[:], optional(boolean))")
+    def _mse(outputs, expected_outputs, deriv=False):
         if deriv:
             return 2 * (outputs - expected_outputs)
             
         return (outputs - expected_outputs) ** 2
 
+    @jit(forceobj=True)
     def gradient(self, output_activations, expected_output, weight_decay = 0):
         model = self.model
         heights = self.heights
@@ -145,22 +157,21 @@ class Model:
 
         return gradient, average_cost
 
+    @jit(forceobj=True)
     def eval(self, input, dropout_rate = 0, training=False):
-        model = self.model
-        heights = self.heights
-        length = model.shape[0]
-        default_height = model.shape[1]
+        length = self.model.shape[0]
+        default_height = self.model.shape[1]
 
         input_activations = input
         layer_outputs = [input_activations]        
 
-        for idx, (height, layer) in enumerate(zip(heights[1:], model)):
+        for idx, (height, layer) in enumerate(zip(self.heights[1:], self.model)):
 
             layer = layer[:height]
 
 
             num_inputs = len(input_activations)
-            output = np.sum(layer[:height, :num_inputs] * input_activations, axis=1) + layer[:, num_inputs]
+            output = np.dot(layer[:height, :num_inputs], input_activations) + layer[:, num_inputs]
 
             # Node Activation
             if idx + 1 == length:
@@ -172,7 +183,7 @@ class Model:
                 # Droupout
                 if training and dropout_rate:
                     mask = (np.random.rand(*output_activations.shape) > dropout_rate) / ( 1 - dropout_rate)
-                    output_activations *= mask
+                    output_activations *= mask / (1 - dropout_rate)
 
             input_activations = output_activations
             layer_outputs.append(output_activations)

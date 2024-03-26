@@ -3,7 +3,7 @@ from utils.model import Model
 from numba import jit, cuda
 from PIL import Image
 from tqdm import tqdm
-import multiprocessing, threading, hashlib, random, numpy as np, copy, math, time, json, os
+import multiprocessing, threading, hashlib, random, numpy as np, copy, gzip, math, time, json, os
 
 class Main:
     def __init__(self, tests_amount, generation_limit, learning_rate, momentum_conservation, weight_decay, cost_limit, dimensions, threads):
@@ -17,8 +17,8 @@ class Main:
         self.threads = threads
         self.cost_limit = cost_limit
         
+        self.save_queue = Queue()
         self.queue = Queue()
-        self.update_queue = Queue()
         self.children = 0
         self.generations = 0
         self.average_cost = 0
@@ -29,35 +29,21 @@ class Main:
         self.options = ['airplane', 'bicycle', 'boat', 'motorbus', 'motorcycle', 'seaplane', 'train', 'truck']
         
         try:
-            file = json.load(open('model-training-data.py', 'r+'))
+            with gzip.open('model-training-data.gz', 'rb') as file:
+                file = json.loads(file.read().decode())
 
-            network = [file[0]] + [np.array(file[1])] + file[2:]
+            network = [self.pad(file[0])] + [np.array(file[1])] + file[2:]
         except Exception as e:
+            print(e)
             network = self.build()
+            open('model-training-data.gz', 'w+').close()
+            self.save_queue.put(network)
 
         print(network[1:])
 
         threading.Thread(target=self.manager, args=(network,)).start()
-        self.update()
 
-    def generator(self): 
-        while True:
-            yield
-
-    def update(self):
-        tloop = tqdm(self.generator())
-        queue = self.update_queue
-        
-        cost_overtime = []
-        
-        for _ in tloop:
-
-            tloop.set_description(f"Average Cost: {self.average_cost}, Generations: {self.generations}, Live: {self.children}")
-
-            cost = queue.get()
-            cost_overtime.append(cost)
-
-            json.dump(cost_overtime, open('generations.json', 'w+'), indent=2)
+        self.save()
 
     def depad(self, model):
         model = model.tolist()
@@ -82,11 +68,10 @@ class Main:
 
         return model
 
-
     def pad(self, model):
         model = model[:]
 
-        for layer_idx, layer in enumerate(model):
+        for layer_idx, layer in tqdm(enumerate(model)):
             for node_idx, node in enumerate(layer):
                 max_weight = max(len(layer[0]) for layer in model)
                 weights = len(node)
@@ -102,6 +87,26 @@ class Main:
 
         return np.array(model)
 
+    def save(self):
+        queue = self.save_queue
+
+        while True:
+            network = queue.get()
+
+            try:
+                data = json.dumps([self.depad(network[0]), network[1].tolist()] + network[2:]).encode()
+            except Exception as e:
+                print(e)
+                data = None
+
+            if data:
+                with gzip.open('model-training-data.temp', 'wb') as file:
+                    file.write(data)
+                    file.close()
+
+                os.remove('model-training-data.gz')
+                os.rename('model-training-data.temp', 'model-training-data.gz')
+            
 
     # Manages threads
     def manager(self, network=None):
@@ -109,10 +114,9 @@ class Main:
         average_accuracy = np.array([])
 
         model = network[0]
-        momentum = np.zeros(self.pad(model).shape)
+        momentum = np.zeros(model.shape)
 
         queue = self.queue
-        update_queue = self.update_queue
         
         for count in range(self.threads):
             receive_queue = Queue()
@@ -128,9 +132,13 @@ class Main:
         old_accuracy = -1
         self.average_cost = None
 
+        cost_overtime = []
+
         for _ in range(self.trials):
 
             network = [model] + network[1:]
+
+            self.save_queue.put(network)
             
             count += 1
             self.generations += 1 
@@ -138,24 +146,12 @@ class Main:
 
             self.children = self.threads
 
-            backup = open('model-training-data.py', 'r+').read()
-            queue = self.queue
-
-            with open('model-training-data.py', 'w+') as file:
-                    try:
-                        file.write(json.dumps([model, network[1].tolist()] + network[2:]))
-                    except Exception as e:
-                        print(e)
-                        file.write(backup)
-
             for thread in threads:
                 thread[1].put(network)
 
-            model = self.pad(model)
-
             gradient = np.zeros(model.shape)
 
-            for _ in range(self.threads):
+            for _ in tqdm(range(self.threads)):
                 _cost, gradient_map = queue.get()
                 gradient += gradient_map
                 
@@ -164,7 +160,13 @@ class Main:
 
             self.average_cost = cost / (self.threads * self.tests)
 
-            update_queue.put(self.average_cost)
+            os.system('cls')
+
+            print(f"Average Cost: {self.average_cost}, Generations: {self.generations}, Live: {self.children}")
+
+            cost_overtime.append(self.average_cost)
+
+            json.dump(cost_overtime, open('generations.json', 'w+'), indent=2)
 
             if self.average_cost < self.cost_limit:
                 print(f"Cost Minimum Reached: {self.cost_limit}")
@@ -176,9 +178,6 @@ class Main:
 
             model -= momentum / self.tests
             
-            model = self.depad(model)
-
-            
             cost = 0
 
     def worker(self, receieve_queue=None, thread_index=0):
@@ -186,11 +185,9 @@ class Main:
         options = self.options
         start = 0
 
-
         while True:
             generations += 1
             model, heights, hidden_activation_function, output_activation_function, cost_function = receieve_queue.get()
-            model = self.pad(model)
             model = Model(
                 model=model,
                 heights=heights,
@@ -236,8 +233,8 @@ class Main:
 
                 gradient += _gradient
 
-                cost += 1 * (np.argmax(model_outputs[-1]) == choice)
-                # cost += _cost
+                # cost += 1 * (np.argmax(model_outputs[-1]) == choice)
+                cost += _cost
 
             start += self.tests * self.threads
 
@@ -245,7 +242,6 @@ class Main:
 
             del model, heights, hidden_activation_function, output_activation_function, cost_function
                     
-
     def build(self):
         inputs = self.inputs
         height = self.height
@@ -267,7 +263,7 @@ class Main:
             model[idx] = np.random.uniform(-variance, variance, (height, inputs + 1)).tolist()
 
 
-        return [model, heights, "relu", "softmax", "cross_entropy"]
+        return [self.pad(model), heights, "relu", "softmax", "cross_entropy"]
 
 if __name__ == "__main__":
     Main(
@@ -284,5 +280,5 @@ if __name__ == "__main__":
                 2: 64
             }
         ],  # The length and height of the model
-        threads = 3  # How many concurrent threads to be used
+        threads = 4  # How many concurrent threads to be used
     )
